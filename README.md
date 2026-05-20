@@ -158,6 +158,7 @@ Think of it as: the LLM is a fixed engine; agentRL learns to assemble better fue
 
 | Backend | Source path | Events parsed |
 |---------|-------------|---------------|
+| **Claude Code** | `~/.claude/sessions/<id>/history.json` | `user`, `assistant`, `tool_use`, `tool_result` |
 | Codex | `~/.codex/sessions/**/*.jsonl` | `task_complete`, `turn_aborted`, `exec_command`, `user_message` |
 | Kimi | `~/.kimi/sessions/<workspace>/<session>/wire.jsonl` | `TurnBegin`, `TurnEnd`, `StepInterrupted`, `ToolCall` |
 | Hermes | `~/.hermes/sessions/*.jsonl` | `user`, `assistant`, `tool` messages |

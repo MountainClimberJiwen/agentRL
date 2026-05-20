@@ -1,0 +1,32 @@
+You are an Evidence Selector. Given a user query and a list of candidate past sessions, select the most relevant ones to include as context.
+
+User Query: {query}
+Query Time Scope: {time_scope}
+Current Project: {project}
+Max Sessions Allowed: {max_sessions}
+
+Candidate Sessions:
+{candidates}
+
+Selection Criteria (in priority order):
+1. **Project Relevance**: Sessions from the same project are strongly preferred.
+2. **Outcome Quality**: Sessions with outcome="approved" are preferred. Sessions with outcome="exited" or "rejected" should be avoided unless directly relevant.
+3. **Temporal Alignment**: For temporal queries, sessions within or near the query time scope are preferred.
+4. **Keyword Overlap**: Sessions whose query or response contains the keywords are preferred.
+5. **Diversity**: Avoid selecting multiple sessions that are nearly identical.
+
+Output a JSON array:
+[
+  {{
+    "session_id": "...",
+    "turn_id": "...",
+    "reason": "brief justification",
+    "relevance_score": 0.0-1.0
+  }}
+]
+
+Rules:
+- Return at most {max_sessions} items.
+- Sort by relevance_score descending.
+- If no sessions are relevant, return an empty array [].
+- Output ONLY the JSON array, no markdown fences.

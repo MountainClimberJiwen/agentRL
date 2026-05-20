@@ -1,0 +1,12 @@
+name: agentrl-policy
+version: 0.1.0
+description: |
+  AgentRL Policy Network Plugin — injects learned behavioral strategies
+  into each turn via the pre_llm_call hook.  No core code changes required.
+author: MountainClimberJiwen
+hooks:
+  - pre_llm_call
+categories:
+  - agentrl
+  - rl
+  - policy

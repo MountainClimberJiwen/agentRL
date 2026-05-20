@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from agentrl.extractors.codex import CodexParser
-from agentrl.extractors.kimi import KimiParser
-from agentrl.extractors.hermes import HermesParser
+from agentrl.extractors.claude_code import ClaudeCodeParser
 from agentrl.extractors.ccconnect import CCConnectParser
+from agentrl.extractors.codex import CodexParser
+from agentrl.extractors.hermes import HermesParser
+from agentrl.extractors.kimi import KimiParser
 from agentrl.models import UnifiedSession, UnifiedTurn
 
 
 class UnifiedExtractor:
     PARSERS = [
+        ClaudeCodeParser(),
         CodexParser(),
         KimiParser(),
         HermesParser(),

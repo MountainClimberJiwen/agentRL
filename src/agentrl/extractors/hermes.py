@@ -5,8 +5,9 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
+from agentrl.extractors.trajectory import TrajectoryBuilder
 from agentrl.models import UnifiedSession, UnifiedTurn
 from agentrl.utils import detect_outcome_from_correction, extract_files_from_tools, parse_iso
 
@@ -15,11 +16,23 @@ class HermesParser:
     GLOB = os.path.expanduser("~/.hermes/sessions/*.jsonl")
     BACKEND = "hermes"
 
+    def __init__(self) -> None:
+        self.traj_builder = TrajectoryBuilder()
+
     def iter_sessions(self) -> Iterator[UnifiedSession]:
         for p in sorted(glob_mod.glob(self.GLOB)):
             yield from self._parse_file(Path(p))
 
-    def _parse_file(self, path: Path) -> Iterator[UnifiedSession]:
+    def iter_trajectories(self) -> Iterator[dict[str, Any]]:
+        """Yield fine-grained TaskTrajectory dicts (new API)."""
+        for p in sorted(glob_mod.glob(self.GLOB)):
+            session_id = Path(p).stem
+            messages = self._read_jsonl(p)
+            if messages:
+                traj = self.traj_builder.build(session_id, self.BACKEND, messages)
+                yield traj.__dict__  # naive dict export; caller can use dataclass
+
+    def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
         messages: list[dict] = []
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -30,7 +43,10 @@ class HermesParser:
                     messages.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
+        return messages
 
+    def _parse_file(self, path: Path) -> Iterator[UnifiedSession]:
+        messages = self._read_jsonl(path)
         if not messages:
             return
 

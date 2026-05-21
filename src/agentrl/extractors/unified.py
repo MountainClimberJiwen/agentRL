@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterator
+from typing import Any, Iterator
 
 from agentrl.extractors.claude_code import ClaudeCodeParser
 from agentrl.extractors.ccconnect import CCConnectParser
@@ -29,3 +29,13 @@ class UnifiedExtractor:
     def iter_turns(self) -> Iterator[UnifiedTurn]:
         for sess in self.iter_sessions():
             yield from sess.turns
+
+    def iter_trajectories(self) -> Iterator[dict[str, Any]]:
+        """Yield fine-grained TaskTrajectory dicts with step-level corrections."""
+        for parser in self.PARSERS:
+            if not hasattr(parser, "iter_trajectories"):
+                continue
+            try:
+                yield from parser.iter_trajectories()
+            except Exception as e:
+                print(f"[{parser.BACKEND}] trajectory error: {e}")

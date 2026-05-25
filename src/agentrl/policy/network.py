@@ -55,7 +55,7 @@ class SoftmaxPolicy:
     def get_best(self, state: str, available_actions: list[str]) -> str:
         """Greedy best action."""
         prefs = self._get_prefs(state)
-        return max(available_actions, key=lambda a: prefs.get(a, 0.0))
+        return max(available_actions, key=lambda a: prefs.prefs.get(a, 0.0))
 
     # ------------------------------------------------------------------
     # Learning

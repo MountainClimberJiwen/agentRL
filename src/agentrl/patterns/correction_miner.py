@@ -36,7 +36,7 @@ class CorrectionMiner:
         # --- SEQUENCE ---
         (
             "sequence",
-            r"(先|第一步|first)应该.*然后|先.*再|先.*然后|反过来|顺序错了|do .* first|first do|then do|reverse the order)",
+            r"(先|第一步|first)应该.*然后|先.*再|先.*然后|反过来|顺序错了|do .* first|first do|then do|reverse the order",
             "{actor} should perform steps in correct order: {expected}",
             "sequence",
         ),

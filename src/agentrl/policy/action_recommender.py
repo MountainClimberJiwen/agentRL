@@ -16,15 +16,24 @@ from typing import Any
 
 from agentrl.models import ActionStep, TaskTrajectory
 from agentrl.policy.network import SoftmaxPolicy
+from agentrl.policy.nn_policy import MLPPolicy, MiniTransformerPolicy, StateEncoder
 from agentrl.llm.kimi_client import KimiClient
 from agentrl.sync.mem0_sync import Mem0PolicySync
+
+# Action mapping for neural policies
+_ACTION_TO_IDX = {
+    "read_file": 0, "terminal": 1, "browser": 2, "search": 3,
+    "llm_response": 4, "execute_code": 5, "user_input": 6,
+}
 
 
 class ActionRecommender:
     """Recommends actions + targets using transition statistics + learned policy + LLM fallback."""
 
-    def __init__(self, policy: SoftmaxPolicy | None = None) -> None:
+    def __init__(self, policy: SoftmaxPolicy | MLPPolicy | MiniTransformerPolicy | None = None) -> None:
         self.policy = policy or SoftmaxPolicy()
+        self.state_encoder = StateEncoder()
+        self._action_to_idx = _ACTION_TO_IDX
 
         # Transition counts: current_action -> next_action -> count
         self.transition_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -124,7 +133,6 @@ class ActionRecommender:
         if stats and stats["total"] > 0 and stats["action"]:
             success_rate = stats["successes"] / stats["total"]
             target = stats.get("target", "")
-            # If no target in stats, try to infer
             if not target and use_llm:
                 target = self.kimi.infer_target(context, "start", stats["action"])
             return {
@@ -137,9 +145,14 @@ class ActionRecommender:
             }
 
         # Fallback to policy network
-        state = f"{intent}:start:0"
+        state_str = f"{intent}:start:0"
         available = ["read_file", "terminal", "browser", "search", "llm_response"]
-        best = self.policy.get_best(state, available)
+
+        if isinstance(self.policy, (MLPPolicy, MiniTransformerPolicy)):
+            state_vec = self.state_encoder.encode(state_str, self._build_state_stats(intent, "start"))
+            best = self.policy.get_best(state_vec, available, self._action_to_idx)
+        else:
+            best = self.policy.get_best(state_str, available)
         target = ""
         if use_llm:
             target = self.kimi.infer_target(context, "start", best)
@@ -156,15 +169,20 @@ class ActionRecommender:
         """Recommend the next action + target given current state."""
         intent = self._detect_intent(context)
         step_idx = len(history) if history else 0
-        state = f"{intent}:{current_action}:{step_idx}"
+        state_str = f"{intent}:{current_action}:{step_idx}"
 
         # 1. Transition statistics
         transitions = dict(self.transition_counts.get(current_action, {}))
         total_trans = sum(transitions.values()) if transitions else 0
 
         # 2. Policy network
-        available = list(transitions.keys()) if transitions else ["read_file", "terminal", "browser", "search", "llm_response", "llm_response"]
-        best_policy = self.policy.get_best(state, available)
+        available = list(transitions.keys()) if transitions else ["read_file", "terminal", "browser", "search", "llm_response", "execute_code"]
+
+        if isinstance(self.policy, (MLPPolicy, MiniTransformerPolicy)):
+            state_vec = self.state_encoder.encode(state_str, self._build_state_stats(intent, current_action))
+            best_policy = self.policy.get_best(state_vec, available, self._action_to_idx)
+        else:
+            best_policy = self.policy.get_best(state_str, available)
 
         # 3. Merge: prefer high-frequency transition, but warn if policy disagrees
         if transitions:
@@ -335,13 +353,41 @@ class ActionRecommender:
         """Update policy network with trajectory reward (agent actions only)."""
         steps = agent_steps if agent_steps is not None else [s for s in traj.steps if s.action_type != "user_input"]
         reward = self._outcome_to_reward(traj.final_outcome)
+
+        # Neural policy update
+        if isinstance(self.policy, (MLPPolicy, MiniTransformerPolicy)):
+            for i, step in enumerate(steps):
+                full_idx = traj.steps.index(step) if step in traj.steps else -1
+                is_corrected = full_idx in traj.correction_points if full_idx >= 0 else False
+                step_reward = reward - 0.5 if is_corrected else reward
+
+                state_str = f"{intent}:{step.action_type}:{i}"
+                stats = self._build_state_stats(intent, step.action_type)
+                state_vec = self.state_encoder.encode(state_str, stats)
+
+                action_idx = self._action_to_idx.get(step.action_type, 0)
+                self.policy.update(state_vec, action_idx, step_reward)
+            return
+
+        # Legacy tabular policy update
         for i, step in enumerate(steps):
             state = f"{intent}:{step.action_type}:{i}"
-            # Map agent step index back to full trajectory index for correction check
             full_idx = traj.steps.index(step) if step in traj.steps else -1
             is_corrected = full_idx in traj.correction_points if full_idx >= 0 else False
             step_reward = reward - 0.5 if is_corrected else reward
             self.policy.update(state, step.action_type, step_reward)
+
+    def _build_state_stats(self, intent: str, action: str) -> dict[str, float]:
+        """Build extra statistics for state encoding."""
+        stats = self.first_action_stats.get(intent, {})
+        total = stats.get("total", 0)
+        successes = stats.get("successes", 0)
+        corrections = sum(1 for f in self.correction_fixes if f["wrong_action"] == action and f["intent"] == intent)
+        return {
+            "visit_count": total,
+            "success_rate": successes / total if total > 0 else 0.5,
+            "correction_rate": corrections / total if total > 0 else 0.0,
+        }
 
     def _check_correction_warning(self, current_action: str, intent: str, context: str) -> str | None:
         """Check if current action has been corrected in similar contexts."""

@@ -9,16 +9,22 @@ from __future__ import annotations
 
 from agentrl.models import TaskTrajectory
 from agentrl.policy.network import SoftmaxPolicy
+from agentrl.policy.nn_policy import MLPPolicy, MiniTransformerPolicy, StateEncoder
 
 
 class OnlinePolicyUpdater:
     """Update policy network from a single trajectory."""
 
-    def __init__(self, policy: SoftmaxPolicy, learning_rate: float = 0.1, baseline_decay: float = 0.9) -> None:
+    def __init__(self, policy: SoftmaxPolicy | MLPPolicy | MiniTransformerPolicy, learning_rate: float = 0.1, baseline_decay: float = 0.9) -> None:
         self.policy = policy
         self.lr = learning_rate
         self.baseline_decay = baseline_decay
         self.baseline = 0.0
+        self.state_encoder = StateEncoder()
+        self._action_to_idx = {
+            "read_file": 0, "terminal": 1, "browser": 2, "search": 3,
+            "llm_response": 4, "execute_code": 5, "user_input": 6,
+        }
 
     def update_from_trajectory(self, traj: TaskTrajectory) -> dict[str, float]:
         """
@@ -44,13 +50,21 @@ class OnlinePolicyUpdater:
         intent = self._detect_intent(traj.goal)
 
         for i, step in enumerate(traj.steps):
-            state = f"{intent}:{step.action_type}:{i}"
             is_corrected = i in traj.correction_points
             step_reward = reward - 0.5 if is_corrected else reward
 
             # Scale update by advantage magnitude (REINFORCE)
             scaled_lr = self.lr * (1.0 + abs(advantage))
-            self.policy.update(state, step.action_type, step_reward, lr=scaled_lr)
+
+            if isinstance(self.policy, (MLPPolicy, MiniTransformerPolicy)):
+                state_str = f"{intent}:{step.action_type}:{i}"
+                state_vec = self.state_encoder.encode(state_str)
+                action_idx = self._action_to_idx.get(step.action_type, 0)
+                self.policy.update(state_vec, action_idx, step_reward, lr=scaled_lr)
+            else:
+                state = f"{intent}:{step.action_type}:{i}"
+                self.policy.update(state, step.action_type, step_reward, lr=scaled_lr)
+
             num_updated += 1
             if is_corrected:
                 num_corrected += 1

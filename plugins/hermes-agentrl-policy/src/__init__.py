@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-AGENTRL_DATA_DIR = Path("/opt/agentrl/data")
+AGENTRL_DATA_DIR = Path(os.environ.get("AGENTRL_DATA_DIR", "./data"))
 USER_MEMORY_PATH = AGENTRL_DATA_DIR / "user_memory.json"
 PLUGIN_DATA_DIR = Path(__file__).parent.parent / "data"
 PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -35,7 +36,7 @@ MIN_SUCCESS_RATE = 0.15
 
 # Default learned patterns (fallback when agentRL data not yet generated)
 # These come from mining 376 real sessions. Will be overridden once
-# /opt/agentrl/data/user_memory.json exists.
+# user_memory.json exists in AGENTRL_DATA_DIR.
 DEFAULT_LEARNED_PATTERNS: List[Dict[str, Any]] = [
     {
         "description": "Always read README and project config files before implementing or writing code",

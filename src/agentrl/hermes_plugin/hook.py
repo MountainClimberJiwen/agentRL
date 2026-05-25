@@ -8,7 +8,7 @@ Attach this to Hermes session end to:
   4. Save updated recommender + policy
 
 Usage:
-    hook = AgentRLHermesHook(data_dir="/opt/agentrl/data")
+    hook = AgentRLHermesHook()  # reads AGENTRL_DATA_DIR env var
     hook.on_session_end(session_id="abc", messages=[...])
 """
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,12 +29,14 @@ from agentrl.llm.kimi_client import KimiClient
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_DATA_DIR = os.environ.get("AGENTRL_DATA_DIR", "./data")
+
 
 class AgentRLHermesHook:
     """Lifecycle hook that learns from every Hermes session."""
 
-    def __init__(self, data_dir: str = "/opt/agentrl/data", use_kimi_judge: bool = True) -> None:
-        self.data_dir = Path(data_dir)
+    def __init__(self, data_dir: str | None = None, use_kimi_judge: bool = True) -> None:
+        self.data_dir = Path(data_dir or _DEFAULT_DATA_DIR)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.recommender_path = self.data_dir / "agentrl_recommender.json"

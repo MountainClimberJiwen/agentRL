@@ -2,7 +2,7 @@
 
 > **Prompt-as-Policy**: No model weights are trained. All evolution happens in the prompt space.
 
-This plugin injects learned behavioral strategies into each Hermes turn via the `pre_llm_call` hook. It reads patterns from [agentRL](https://github.com/MountainClimberJiwen/agentrl)'s `user_memory.json` and selects the most relevant strategy based on the current task context.
+This plugin injects learned behavioral strategies into each Hermes turn via the `pre_llm_call` hook. It reads patterns from agentRL's `user_memory.json` and selects the most relevant strategy based on the current task context.
 
 ## How It Works
 
@@ -30,7 +30,7 @@ Hermes LLM Call (with learned strategy visible)
 
 ```bash
 # Clone into Hermes plugins directory
-git clone git@github.com:MountainClimberJiwen/agentrl-policy.git \
+git clone <your-repo-url> \
   ~/.hermes/plugins/agentrl-policy
 
 # Restart Hermes (or run `hermes` again)
@@ -42,7 +42,7 @@ git clone git@github.com:MountainClimberJiwen/agentrl-policy.git \
 Optional: set these in your shell or `~/.hermes/.env`:
 
 ```bash
-# Path to agentRL data (default: /opt/agentrl/data)
+# Path to agentRL data (default: ./data)
 AGENTRL_DATA_DIR=/path/to/agentrl/data
 
 # Max strategies per turn (default: 3)
@@ -84,10 +84,10 @@ Even before agentRL data exists, the plugin ships with proven patterns mined fro
 ## Architecture
 
 ```
-├── plugin.yaml              # Plugin metadata
-├── src/
-│   └── __init__.py          # Hook registration + policy engine
-└── data/                    # Plugin-local cache (optional)
+├─── plugin.yaml              # Plugin metadata
+├─── src/
+│   └─── __init__.py          # Hook registration + policy engine
+└─── data/                    # Plugin-local cache (optional)
 ```
 
 ## Extending

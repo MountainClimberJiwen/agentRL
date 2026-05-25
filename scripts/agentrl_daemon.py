@@ -27,7 +27,8 @@ if _AGENTRL_SRC not in sys.path:
 from agentrl.hermes_plugin import AgentRLHermesHook
 
 SESSIONS_DIR = Path.home() / ".hermes" / "sessions"
-PROCESSED_LOG = Path("/opt/agentrl/data/processed_sessions.json")
+DATA_DIR = Path(os.environ.get("AGENTRL_DATA_DIR", "./data"))
+PROCESSED_LOG = DATA_DIR / "processed_sessions.json"
 SCAN_INTERVAL = 30  # seconds
 
 

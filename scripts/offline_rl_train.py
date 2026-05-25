@@ -7,7 +7,8 @@ from historical session data in SQLite.
 
 If no real data exists, generates realistic synthetic data for demonstration.
 
-Outputs optimized policy config to /opt/agentrl/data/user_memory.json
+Outputs optimized policy config to $AGENTRL_DATA_DIR/user_memory.json
+(default: ./data/user_memory.json)
 """
 
 from __future__ import annotations

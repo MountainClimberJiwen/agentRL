@@ -41,27 +41,40 @@ class ActionRecommender:
 
     def learn_from_trajectory(self, traj: TaskTrajectory) -> None:
         """Ingest a single trajectory and update all statistics."""
-        # 1. Learn state transitions
-        for i in range(len(traj.steps) - 1):
-            current = traj.steps[i].action_type
-            next_a = traj.steps[i + 1].action_type
+        # Filter out user_input steps for action learning
+        agent_steps = [s for s in traj.steps if s.action_type != "user_input"]
+        if not agent_steps:
+            return
+
+        intent = self._detect_intent(traj.goal)
+
+        # 1. Learn state transitions (agent actions only)
+        for i in range(len(agent_steps) - 1):
+            current = agent_steps[i].action_type
+            next_a = agent_steps[i + 1].action_type
             self.transition_counts[current][next_a] += 1
 
-        # 2. Learn first action for intent
-        intent = self._detect_intent(traj.goal)
-        if traj.steps:
-            first = traj.steps[0].action_type
-            stats = self.first_action_stats[intent]
-            if stats["total"] == 0:
-                stats["action"] = first
-            stats["total"] += 1
-            if traj.final_outcome in ("approved", "success"):
-                stats["successes"] += 1
+        # 2. Learn first action for intent (first agent action)
+        first = agent_steps[0].action_type
+        stats = self.first_action_stats[intent]
+        if stats["total"] == 0:
+            stats["action"] = first
+        stats["total"] += 1
+        if traj.final_outcome in ("approved", "success"):
+            stats["successes"] += 1
 
-        # 3. Learn correction patterns
+        # 3. Learn correction patterns (map correction index to agent step)
         for idx in traj.correction_points:
             if idx < len(traj.steps):
                 wrong_step = traj.steps[idx]
+                # Skip if correction was on user_input itself; map to nearest preceding agent step
+                if wrong_step.action_type == "user_input":
+                    # Find nearest preceding agent step
+                    preceding = [s for s in traj.steps[:idx] if s.action_type != "user_input"]
+                    if preceding:
+                        wrong_step = preceding[-1]
+                    else:
+                        continue
                 self.correction_fixes.append({
                     "wrong_action": wrong_step.action_type,
                     "wrong_target": wrong_step.target,
@@ -70,13 +83,13 @@ class ActionRecommender:
                     "intent": intent,
                 })
 
-        # 4. Record action rewards
+        # 4. Record action rewards (agent actions only)
         reward = self._outcome_to_reward(traj.final_outcome)
-        for step in traj.steps:
+        for step in agent_steps:
             self.action_rewards[step.action_type].append(reward)
 
-        # 5. Update policy network
-        self._update_policy(traj, intent)
+        # 5. Update policy network (agent actions only)
+        self._update_policy(traj, intent, agent_steps)
 
     # ------------------------------------------------------------------
     # Recommendation
@@ -88,7 +101,7 @@ class ActionRecommender:
 
         # Lookup learned first-action stats
         stats = self.first_action_stats.get(intent)
-        if stats and stats["total"] > 0:
+        if stats and stats["total"] > 0 and stats["action"]:
             success_rate = stats["successes"] / stats["total"]
             return {
                 "recommended_action": stats["action"],
@@ -211,12 +224,15 @@ class ActionRecommender:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _update_policy(self, traj: TaskTrajectory, intent: str) -> None:
-        """Update policy network with trajectory reward."""
+    def _update_policy(self, traj: TaskTrajectory, intent: str, agent_steps: list | None = None) -> None:
+        """Update policy network with trajectory reward (agent actions only)."""
+        steps = agent_steps if agent_steps is not None else [s for s in traj.steps if s.action_type != "user_input"]
         reward = self._outcome_to_reward(traj.final_outcome)
-        for i, step in enumerate(traj.steps):
+        for i, step in enumerate(steps):
             state = f"{intent}:{step.action_type}:{i}"
-            is_corrected = i in traj.correction_points
+            # Map agent step index back to full trajectory index for correction check
+            full_idx = traj.steps.index(step) if step in traj.steps else -1
+            is_corrected = full_idx in traj.correction_points if full_idx >= 0 else False
             step_reward = reward - 0.5 if is_corrected else reward
             self.policy.update(state, step.action_type, step_reward)
 

@@ -126,11 +126,41 @@ class TrajectoryBuilder:
     # ------------------------------------------------------------------
 
     def _extract_goal(self, messages: list[dict]) -> str:
-        """First user message = task goal."""
+        """First *meaningful* user message = task goal."""
+        skip_patterns = (
+            "textcontent",
+            "content=hi",
+            "content=1",
+            "content=好",
+            "content=行",
+            "content=干",
+            "content=ok",
+            "content=yes",
+            "/approve",
+            "在吗",
+            "还在吗",
+            "好的",
+            "可以",
+        )
         for m in messages:
             if m.get("role") == "user":
+                text = m.get("content", "").strip().lower()
+                # Skip empty / too short / placeholder messages
+                if len(text) < 5:
+                    continue
+                if any(p in text for p in skip_patterns):
+                    continue
                 return self._preview(m.get("content", ""), 300)
         return ""
+
+    @staticmethod
+    def _is_placeholder_message(text: str) -> bool:
+        """Detect empty/placeholder user messages."""
+        t = text.strip().lower()
+        if len(t) < 4:
+            return True
+        placeholders = ("hi", "hello", "hey", "1", "ok", "yes", "好", "行", "干", "在吗", "还在吗", "/approve")
+        return t in placeholders or t.startswith("textcontent")
 
     def _tool_call_to_step(
         self, tc: dict, idx: int, ts: datetime | None

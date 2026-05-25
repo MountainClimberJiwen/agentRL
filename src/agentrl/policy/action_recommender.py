@@ -18,7 +18,7 @@ from agentrl.models import ActionStep, TaskTrajectory
 from agentrl.policy.network import SoftmaxPolicy
 from agentrl.policy.nn_policy import MLPPolicy, MiniTransformerPolicy, StateEncoder
 from agentrl.llm.kimi_client import KimiClient
-from agentrl.sync.mem0_sync import Mem0PolicySync
+from agentrl.memory.unified_client import get_memory_client
 
 # Action mapping for neural policies
 _ACTION_TO_IDX = {
@@ -52,8 +52,8 @@ class ActionRecommender:
         # LLM client for target inference
         self.kimi = KimiClient()
 
-        # Mem0 sync for multi-agent sharing
-        self.mem0_sync = Mem0PolicySync()
+        # Unified memory sync (auto-detects mem0 or memos-local)
+        self.memory = get_memory_client()
         self._agent_steps_total = 0
 
     # ------------------------------------------------------------------
@@ -259,8 +259,8 @@ class ActionRecommender:
     # ------------------------------------------------------------------
 
     @classmethod
-    def load(cls, path: str, pull_from_mem0: bool = True) -> "ActionRecommender":
-        """Load recommender from JSON file, optionally merging shared Mem0 policy."""
+    def load(cls, path: str, pull_from_memory: bool = True) -> "ActionRecommender":
+        """Load recommender from JSON file, optionally merging shared memory policy."""
         p = Path(path)
         rec = cls()
 
@@ -283,10 +283,10 @@ class ActionRecommender:
                 rec.target_counts[k] = defaultdict(int, v)
             rec._agent_steps_total = data.get("agent_steps_total", 0)
 
-        # 2. Pull shared policy from Mem0
-        if pull_from_mem0:
+        # 2. Pull shared policy from memory backend
+        if pull_from_memory:
             try:
-                shared = rec.mem0_sync.pull_policy()
+                shared = rec.memory.pull_policy()
                 if shared:
                     # Merge first actions
                     for intent, stats in shared.get("first_action_stats", {}).items():
@@ -304,14 +304,14 @@ class ActionRecommender:
                     # Merge corrections
                     rec.correction_fixes.extend(shared.get("correction_fixes", []))
 
-                    print(f"[agentRL] Merged shared policy from Mem0: {len(shared.get('first_action_stats', {}))} intents, {len(shared.get('transition_counts', {}))} transitions")
+                    print(f"[agentRL] Merged shared policy from memory: {len(shared.get('first_action_stats', {}))} intents, {len(shared.get('transition_counts', {}))} transitions")
             except Exception as e:
-                print(f"[agentRL] Mem0 pull skipped: {e}")
+                print(f"[agentRL] Memory pull skipped: {e}")
 
         return rec
 
-    def save(self, path: str, push_to_mem0: bool = True) -> None:
-        """Save recommender state to JSON file, optionally pushing to Mem0."""
+    def save(self, path: str, push_to_memory: bool = True) -> None:
+        """Save recommender state to JSON file, optionally pushing to shared memory."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -331,19 +331,19 @@ class ActionRecommender:
         with open(p, "w") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
-        # Push to Mem0
-        if push_to_mem0:
+        # Push to memory backend
+        if push_to_memory:
             try:
-                ok = self.mem0_sync.push_policy(
+                ok = self.memory.push_policy(
                     first_action_stats=dict(self.first_action_stats),
                     transition_counts={k: dict(v) for k, v in self.transition_counts.items()},
                     correction_fixes=self.correction_fixes,
                     agent_steps_total=self._agent_steps_total,
                 )
                 if ok:
-                    print("[agentRL] Policy snapshot pushed to Mem0")
+                    print("[agentRL] Policy snapshot pushed to memory")
             except Exception as e:
-                print(f"[agentRL] Mem0 push skipped: {e}")
+                print(f"[agentRL] Memory push skipped: {e}")
 
     # ------------------------------------------------------------------
     # Helpers

@@ -16,10 +16,12 @@ from typing import Any
 
 from agentrl.models import ActionStep, TaskTrajectory
 from agentrl.policy.network import SoftmaxPolicy
+from agentrl.llm.kimi_client import KimiClient
+from agentrl.sync.mem0_sync import Mem0PolicySync
 
 
 class ActionRecommender:
-    """Recommends actions using transition statistics + learned policy."""
+    """Recommends actions + targets using transition statistics + learned policy + LLM fallback."""
 
     def __init__(self, policy: SoftmaxPolicy | None = None) -> None:
         self.policy = policy or SoftmaxPolicy()
@@ -35,6 +37,16 @@ class ActionRecommender:
         # Correction patterns: (wrong_action, correction_type, context) -> fix_info
         self.correction_fixes: list[dict[str, Any]] = []
 
+        # Target learning: action_type -> target -> count
+        self.target_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+        # LLM client for target inference
+        self.kimi = KimiClient()
+
+        # Mem0 sync for multi-agent sharing
+        self.mem0_sync = Mem0PolicySync()
+        self._agent_steps_total = 0
+
     # ------------------------------------------------------------------
     # Learning
     # ------------------------------------------------------------------
@@ -46,6 +58,7 @@ class ActionRecommender:
         if not agent_steps:
             return
 
+        self._agent_steps_total += len(agent_steps)
         intent = self._detect_intent(traj.goal)
 
         # 1. Learn state transitions (agent actions only)
@@ -54,16 +67,23 @@ class ActionRecommender:
             next_a = agent_steps[i + 1].action_type
             self.transition_counts[current][next_a] += 1
 
-        # 2. Learn first action for intent (first agent action)
+        # 2. Learn targets
+        for step in agent_steps:
+            if step.target:
+                self.target_counts[step.action_type][step.target] += 1
+
+        # 3. Learn first action for intent (first agent action)
         first = agent_steps[0].action_type
+        first_target = agent_steps[0].target
         stats = self.first_action_stats[intent]
         if stats["total"] == 0:
             stats["action"] = first
+            stats["target"] = first_target
         stats["total"] += 1
         if traj.final_outcome in ("approved", "success"):
             stats["successes"] += 1
 
-        # 3. Learn correction patterns (map correction index to agent step)
+        # 4. Learn correction patterns (map correction index to agent step)
         for idx in traj.correction_points:
             if idx < len(traj.steps):
                 wrong_step = traj.steps[idx]
@@ -83,28 +103,33 @@ class ActionRecommender:
                     "intent": intent,
                 })
 
-        # 4. Record action rewards (agent actions only)
+        # 5. Record action rewards (agent actions only)
         reward = self._outcome_to_reward(traj.final_outcome)
         for step in agent_steps:
             self.action_rewards[step.action_type].append(reward)
 
-        # 5. Update policy network (agent actions only)
+        # 6. Update policy network (agent actions only)
         self._update_policy(traj, intent, agent_steps)
 
     # ------------------------------------------------------------------
     # Recommendation
     # ------------------------------------------------------------------
 
-    def recommend_first_action(self, context: str) -> dict[str, Any]:
-        """Recommend the first action for a new task."""
+    def recommend_first_action(self, context: str, use_llm: bool = True) -> dict[str, Any]:
+        """Recommend the first action + target for a new task."""
         intent = self._detect_intent(context)
 
         # Lookup learned first-action stats
         stats = self.first_action_stats.get(intent)
         if stats and stats["total"] > 0 and stats["action"]:
             success_rate = stats["successes"] / stats["total"]
+            target = stats.get("target", "")
+            # If no target in stats, try to infer
+            if not target and use_llm:
+                target = self.kimi.infer_target(context, "start", stats["action"])
             return {
                 "recommended_action": stats["action"],
+                "recommended_target": target,
                 "confidence": min(0.95, success_rate),
                 "reason": f"Learned from {stats['total']} past '{intent}' tasks",
                 "alternatives": [],
@@ -115,16 +140,20 @@ class ActionRecommender:
         state = f"{intent}:start:0"
         available = ["read_file", "terminal", "browser", "search", "llm_response"]
         best = self.policy.get_best(state, available)
+        target = ""
+        if use_llm:
+            target = self.kimi.infer_target(context, "start", best)
         return {
             "recommended_action": best,
+            "recommended_target": target,
             "confidence": 0.5,
             "reason": f"Policy fallback for '{intent}'",
             "alternatives": [],
             "warning": None,
         }
 
-    def recommend_next_action(self, context: str, current_action: str, history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        """Recommend the next action given current state."""
+    def recommend_next_action(self, context: str, current_action: str, history: list[dict[str, Any]] | None = None, use_llm: bool = True) -> dict[str, Any]:
+        """Recommend the next action + target given current state."""
         intent = self._detect_intent(context)
         step_idx = len(history) if history else 0
         state = f"{intent}:{current_action}:{step_idx}"
@@ -150,7 +179,10 @@ class ActionRecommender:
             confidence = 0.3
             warning = "No historical transitions; using policy fallback"
 
-        # 4. Check correction warnings
+        # 4. Target recommendation
+        target = self._get_target_recommendation(recommended, context, current_action, history, use_llm)
+
+        # 5. Check correction warnings
         corr_warning = self._check_correction_warning(current_action, intent, context)
         if corr_warning:
             warning = corr_warning
@@ -159,11 +191,39 @@ class ActionRecommender:
 
         return {
             "recommended_action": recommended,
+            "recommended_target": target,
             "confidence": confidence,
             "reason": f"Based on {total_trans} transitions from '{current_action}'",
             "alternative_actions": alternatives,
             "warning": warning,
         }
+
+    def _get_target_recommendation(
+        self,
+        action: str,
+        context: str,
+        current_action: str,
+        history: list[dict[str, Any]] | None,
+        use_llm: bool,
+    ) -> str:
+        """Recommend a concrete target for an action."""
+        # 1. Check historical target counts
+        targets = dict(self.target_counts.get(action, {}))
+        if targets:
+            best_target = max(targets, key=targets.get)
+            if targets[best_target] >= 2:
+                return best_target
+
+        # 2. Check correction warnings for target
+        for fix in self.correction_fixes:
+            if fix["wrong_action"] == action and fix.get("wrong_target"):
+                return f"AVOID: {fix['wrong_target']}"
+
+        # 3. LLM fallback
+        if use_llm:
+            return self.kimi.infer_target(context, current_action, action)
+
+        return ""
 
     def get_correction_warning(self, action: str, target: str, context: str) -> str | None:
         """Check if an action+target combination has been corrected before."""
@@ -181,28 +241,59 @@ class ActionRecommender:
     # ------------------------------------------------------------------
 
     @classmethod
-    def load(cls, path: str) -> "ActionRecommender":
-        """Load recommender from JSON file."""
+    def load(cls, path: str, pull_from_mem0: bool = True) -> "ActionRecommender":
+        """Load recommender from JSON file, optionally merging shared Mem0 policy."""
         p = Path(path)
-        if not p.exists():
-            return cls()
-        with open(p) as f:
-            data = json.load(f)
         rec = cls()
-        if "policy" in data:
-            rec.policy = SoftmaxPolicy.load(str(p))  # policy saved inline or same dir
-        rec.transition_counts = defaultdict(lambda: defaultdict(int))
-        for k, v in data.get("transition_counts", {}).items():
-            rec.transition_counts[k] = defaultdict(int, v)
-        rec.first_action_stats = defaultdict(lambda: {"action": "", "successes": 0, "total": 0})
-        rec.first_action_stats.update(data.get("first_action_stats", {}))
-        rec.correction_fixes = data.get("correction_fixes", [])
-        rec.action_rewards = defaultdict(list)
-        rec.action_rewards.update({k: v for k, v in data.get("action_rewards", {}).items()})
+
+        # 1. Load local file
+        if p.exists():
+            with open(p) as f:
+                data = json.load(f)
+            if "policy" in data:
+                rec.policy = SoftmaxPolicy.load(str(p))
+            rec.transition_counts = defaultdict(lambda: defaultdict(int))
+            for k, v in data.get("transition_counts", {}).items():
+                rec.transition_counts[k] = defaultdict(int, v)
+            rec.first_action_stats = defaultdict(lambda: {"action": "", "successes": 0, "total": 0})
+            rec.first_action_stats.update(data.get("first_action_stats", {}))
+            rec.correction_fixes = data.get("correction_fixes", [])
+            rec.action_rewards = defaultdict(list)
+            rec.action_rewards.update({k: v for k, v in data.get("action_rewards", {}).items()})
+            rec.target_counts = defaultdict(lambda: defaultdict(int))
+            for k, v in data.get("target_counts", {}).items():
+                rec.target_counts[k] = defaultdict(int, v)
+            rec._agent_steps_total = data.get("agent_steps_total", 0)
+
+        # 2. Pull shared policy from Mem0
+        if pull_from_mem0:
+            try:
+                shared = rec.mem0_sync.pull_policy()
+                if shared:
+                    # Merge first actions
+                    for intent, stats in shared.get("first_action_stats", {}).items():
+                        local = rec.first_action_stats[intent]
+                        if local["total"] == 0:
+                            local["action"] = stats.get("action", "")
+                        local["total"] += stats.get("total", 0)
+                        local["successes"] += stats.get("successes", 0)
+
+                    # Merge transitions
+                    for cur, nexts in shared.get("transition_counts", {}).items():
+                        for nxt, cnt in nexts.items():
+                            rec.transition_counts[cur][nxt] += cnt
+
+                    # Merge corrections
+                    rec.correction_fixes.extend(shared.get("correction_fixes", []))
+
+                    print(f"[agentRL] Merged shared policy from Mem0: {len(shared.get('first_action_stats', {}))} intents, {len(shared.get('transition_counts', {}))} transitions")
+            except Exception as e:
+                print(f"[agentRL] Mem0 pull skipped: {e}")
+
         return rec
 
-    def save(self, path: str) -> None:
-        """Save recommender state to JSON file."""
+    def save(self, path: str, push_to_mem0: bool = True) -> None:
+        """Save recommender state to JSON file, optionally pushing to Mem0."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -215,10 +306,26 @@ class ActionRecommender:
             "first_action_stats": dict(self.first_action_stats),
             "correction_fixes": self.correction_fixes,
             "action_rewards": {k: v for k, v in self.action_rewards.items()},
+            "target_counts": {k: dict(v) for k, v in self.target_counts.items()},
+            "agent_steps_total": self._agent_steps_total,
             "policy_path": str(policy_path),
         }
         with open(p, "w") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+
+        # Push to Mem0
+        if push_to_mem0:
+            try:
+                ok = self.mem0_sync.push_policy(
+                    first_action_stats=dict(self.first_action_stats),
+                    transition_counts={k: dict(v) for k, v in self.transition_counts.items()},
+                    correction_fixes=self.correction_fixes,
+                    agent_steps_total=self._agent_steps_total,
+                )
+                if ok:
+                    print("[agentRL] Policy snapshot pushed to Mem0")
+            except Exception as e:
+                print(f"[agentRL] Mem0 push skipped: {e}")
 
     # ------------------------------------------------------------------
     # Helpers

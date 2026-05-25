@@ -24,6 +24,7 @@ from agentrl.extractors.trajectory import TrajectoryBuilder
 from agentrl.models import TaskTrajectory
 from agentrl.policy.action_recommender import ActionRecommender
 from agentrl.policy.online_updater import OnlinePolicyUpdater
+from agentrl.llm.kimi_client import KimiClient
 
 logger = logging.getLogger(__name__)
 
@@ -31,18 +32,20 @@ logger = logging.getLogger(__name__)
 class AgentRLHermesHook:
     """Lifecycle hook that learns from every Hermes session."""
 
-    def __init__(self, data_dir: str = "/opt/agentrl/data") -> None:
+    def __init__(self, data_dir: str = "/opt/agentrl/data", use_kimi_judge: bool = True) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.recommender_path = self.data_dir / "agentrl_recommender.json"
         self.policy_path = self.data_dir / "agentrl_policy.json"
         self.trajectory_db = self.data_dir / "trajectories.jsonl"
+        self.use_kimi_judge = use_kimi_judge
 
         # Load or initialize
         self.recommender = ActionRecommender.load(str(self.recommender_path))
         self.updater = OnlinePolicyUpdater(self.recommender.policy)
         self.builder = TrajectoryBuilder()
+        self.kimi = KimiClient()
 
     def on_session_end(self, session_id: str, messages: list[dict[str, Any]], backend: str = "hermes") -> dict[str, Any]:
         """
@@ -61,25 +64,36 @@ class AgentRLHermesHook:
         # 1. Build trajectory
         traj = self.builder.build(session_id=session_id, backend=backend, messages=messages)
 
-        # 2. Store raw trajectory for offline batch training later
+        # 2. LLM Judge: resolve unknown outcomes
+        agent_steps = [s for s in traj.steps if s.action_type != "user_input"]
+        if self.use_kimi_judge and traj.final_outcome == "unknown" and len(agent_steps) >= 3:
+            try:
+                judged, confidence = self.kimi.judge_outcome(traj.goal, messages)
+                if judged != "unknown":
+                    logger.info(f"[agentRL] LLM judged outcome: {judged} (conf={confidence:.0%})")
+                    traj.final_outcome = judged
+            except Exception as e:
+                logger.debug(f"[agentRL] LLM judge failed: {e}")
+
+        # 3. Store raw trajectory for offline batch training later
         self._store_trajectory(traj)
 
-        # 3. Skip if too short or no signal
+        # 4. Skip if too short or no signal
         if len(traj.steps) < 2:
             return {"status": "skipped", "reason": "too_few_steps", "session_id": session_id}
 
-        # 4. Learn into recommender (transitions, first-actions, corrections)
+        # 5. Learn into recommender (transitions, first-actions, corrections)
         self.recommender.learn_from_trajectory(traj)
 
-        # 5. Online policy update (REINFORCE)
+        # 6. Online policy update (REINFORCE)
         diagnostics = self.updater.update_from_trajectory(traj)
 
-        # 6. Persist
+        # 7. Persist
         self.recommender.save(str(self.recommender_path))
 
         logger.info(
             f"[agentRL] Learned: reward={diagnostics['trajectory_reward']:.2f} "
-            f"corrections={traj.num_corrections} steps={len(traj.steps)}"
+            f"corrections={traj.num_corrections} steps={len(traj.steps)} outcome={traj.final_outcome}"
         )
 
         return {

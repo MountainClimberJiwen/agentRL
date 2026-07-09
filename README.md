@@ -289,7 +289,7 @@ python scripts/eval_with_judge.py --db data/agentrl.db --llm-judge --judge-n 10
 
 ## Author & Contact
 
-**MountainClimberJiwen** — 纪文
+**MountainClimberJiwen**
 
 - 📧 Email: ljwscu@gmail.com
 - 💬 WeChat: 扫码添加好友
